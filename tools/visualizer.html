@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Raft Chaos Test Visualizer</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px; background: #0f1420; color: #e6e9f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: #8891a8; font-size: 13px; margin-bottom: 20px; }
+  .dropzone {
+    border: 2px dashed #3a4258; border-radius: 10px; padding: 32px; text-align: center;
+    color: #8891a8; margin-bottom: 20px; transition: border-color .15s, background .15s;
+  }
+  .dropzone.drag { border-color: #5b8def; background: #161c2c; }
+  .dropzone input { display: none; }
+  .dropzone label {
+    display: inline-block; padding: 8px 16px; background: #5b8def; color: white;
+    border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; margin-top: 8px;
+  }
+  .fileslots { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+  .fileslot {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #1b2233;
+    border: 1px solid #2c344a;
+  }
+  .fileslot.loaded { border-color: #4caf7d; color: #4caf7d; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .summary { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .card {
+    background: #161c2c; border: 1px solid #262e42; border-radius: 8px; padding: 12px 16px;
+    min-width: 120px;
+  }
+  .card .num { font-size: 22px; font-weight: 700; }
+  .card .label { font-size: 11px; color: #8891a8; text-transform: uppercase; letter-spacing: .04em; }
+  .card.violation { border-color: #e5484d; }
+  .card.violation .num { color: #e5484d; }
+  .card.ok .num { color: #4caf7d; }
+  #chart-wrap { overflow-x: auto; border: 1px solid #262e42; border-radius: 8px; background: #10141f; }
+  svg { display: block; }
+  .lane-label { fill: #8891a8; font-size: 12px; font-family: inherit; }
+  .axis-label { fill: #566079; font-size: 10px; font-family: inherit; }
+  .op-bar { cursor: pointer; }
+  .op-bar:hover { stroke: white; stroke-width: 1.5px; }
+  .op-bar.witness { stroke: #ffee58; stroke-width: 2px; }
+  .chaos-line { stroke: #e5484d; stroke-width: 1; stroke-dasharray: 4 3; }
+  .chaos-line.restart { stroke: #4caf7d; }
+  .chaos-label { fill: #e5484d; font-size: 10px; }
+  .chaos-label.restart { fill: #4caf7d; }
+  #tooltip {
+    position: fixed; pointer-events: none; background: #1b2233; border: 1px solid #3a4258;
+    border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.5; display: none; z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  #tooltip b { color: #5b8def; }
+  .hint { font-size: 12px; color: #566079; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>Raft Chaos Test Visualizer</h1>
+<div class="subtitle">Drop the files produced by <code>ChaosTestRunner</code> — history is required, events/violations are optional.</div>
+
+<div class="dropzone" id="dropzone">
+  Drag &amp; drop <code>*-history.json</code> (and optionally <code>*-events.json</code>, <code>*-violations.json</code>) here
+  <br>
+  <label for="fileInput">or choose files</label>
+  <input type="file" id="fileInput" multiple accept=".json">
+  <div class="fileslots">
+    <div class="fileslot" id="slot-history">history.json</div>
+    <div class="fileslot" id="slot-events">events.json (optional)</div>
+    <div class="fileslot" id="slot-violations">violations.json (optional)</div>
+  </div>
+</div>
+
+<div id="output" style="display:none">
+  <div class="legend">
+    <span><span class="swatch" style="background:#5b8def"></span> PUT (OK)</span>
+    <span><span class="swatch" style="background:#4caf7d"></span> GET (OK)</span>
+    <span><span class="swatch" style="background:#f0a83c"></span> INDETERMINATE</span>
+    <span><span class="swatch" style="background:#4a5170"></span> FAIL (excluded from history)</span>
+    <span><span class="swatch" style="background:#ffee58;border-radius:50%"></span> violation witness</span>
+    <span>┊ <span style="color:#e5484d">red dashed</span> = leader killed</span>
+    <span>┊ <span style="color:#4caf7d">green dashed</span> = node restarted</span>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div id="chart-wrap"></div>
+  <div class="hint">Hover any bar for details. Horizontal scroll if the run is long. Each row is one key (register); bars are individual PUT/GET operations positioned by real invoke→complete time.</div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+let files = { history: null, events: null, violations: null };
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+['dragenter','dragover'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
+['dragleave','drop'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+dropzone.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+function handleFiles(fileList) {
+  [...fileList].forEach(f => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (f.name.includes('events')) { files.events = data; markSlot('slot-events'); }
+        else if (f.name.includes('violations')) { files.violations = data; markSlot('slot-violations'); }
+        else { files.history = data; markSlot('slot-history'); }
+        if (files.history) render();
+      } catch (err) {
+        alert('Could not parse ' + f.name + ': ' + err.message);
+      }
+    };
+    reader.readAsText(f);
+  });
+}
+
+function markSlot(id) {
+  document.getElementById(id).classList.add('loaded');
+}
+
+const COLORS = {
+  PUT_OK: '#5b8def',
+  GET_OK: '#4caf7d',
+  INDETERMINATE: '#f0a83c',
+  FAIL: '#4a5170'
+};
+
+function colorFor(op) {
+  if (op.outcome === 'INDETERMINATE') return COLORS.INDETERMINATE;
+  if (op.outcome === 'FAIL') return COLORS.FAIL;
+  return op.type === 'PUT' ? COLORS.PUT_OK : COLORS.GET_OK;
+}
+
+function render() {
+  document.getElementById('output').style.display = 'block';
+  const ops = files.history;
+  const events = files.events || [];
+  const witnessIds = new Set((files.violations || []).map(o => o.id));
+
+  const keys = [...new Set(ops.map(o => o.key))].sort();
+  const maxMs = Math.max(
+    ...ops.map(o => o.completeNanos / 1e6),
+    ...events.map(e => e.atMs)
+  );
+
+  // ---- summary cards ----
+  const total = ops.length;
+  const indeterminate = ops.filter(o => o.outcome === 'INDETERMINATE').length;
+  const fails = ops.filter(o => o.outcome === 'FAIL').length;
+  const kills = events.filter(e => e.type === 'kill').length;
+  const violatingKeys = new Set((files.violations || []).map(o => o.key));
+
+  const summary = document.getElementById('summary');
+  summary.innerHTML = `
+    <div class="card"><div class="num">${total}</div><div class="label">Total ops</div></div>
+    <div class="card"><div class="num">${kills}</div><div class="label">Leader kills</div></div>
+    <div class="card"><div class="num">${indeterminate}</div><div class="label">Indeterminate writes</div></div>
+    <div class="card"><div class="num">${fails}</div><div class="label">Clean fails</div></div>
+    <div class="card ${violatingKeys.size ? 'violation' : 'ok'}">
+      <div class="num">${violatingKeys.size ? violatingKeys.size + ' FAIL' : 'PASS'}</div>
+      <div class="label">Linearizability</div>
+    </div>
+  `;
+
+  // ---- chart geometry ----
+  const laneH = 46, leftPad = 40, topPad = 30, msPerPx = Math.max(0.15, maxMs / 1400);
+  const chartW = Math.max(900, maxMs / msPerPx) + leftPad + 40;
+  const chartH = keys.length * laneH + topPad + 30;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', chartW);
+  svg.setAttribute('height', chartH);
+
+  function x(ms) { return leftPad + ms / msPerPx; }
+
+  // gridlines + time axis
+  const stepMs = niceStep(maxMs / 12);
+  for (let t = 0; t <= maxMs; t += stepMs) {
+    const gx = x(t);
+    addLine(svg, gx, topPad - 10, gx, chartH - 20, '#1c2436', 1);
+    addText(svg, gx, chartH - 6, (t/1000).toFixed(1) + 's', 'axis-label', 'middle');
+  }
+
+  // lane backgrounds + labels
+  keys.forEach((k, i) => {
+    const y = topPad + i * laneH;
+    addRect(svg, leftPad, y, chartW - leftPad - 10, laneH - 6, i % 2 === 0 ? '#131826' : '#10141f');
+    addText(svg, 8, y + laneH/2 - 2, k, 'lane-label', 'start');
+  });
+
+  // chaos event lines
+  events.forEach(e => {
+    const gx = x(e.atMs);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', gx); line.setAttribute('x2', gx);
+    line.setAttribute('y1', topPad - 10); line.setAttribute('y2', chartH - 20);
+    line.setAttribute('class', 'chaos-line' + (e.type === 'restart' ? ' restart' : ''));
+    svg.appendChild(line);
+    addText(svg, gx + 3, topPad - 14, (e.type === 'kill' ? '✕' : '↻') + ' node-' + e.nodeId,
+      'chaos-label' + (e.type === 'restart' ? ' restart' : ''), 'start');
+  });
+
+  // operation bars
+  const tooltip = document.getElementById('tooltip');
+  ops.forEach(op => {
+    const laneIdx = keys.indexOf(op.key);
+    const y = topPad + laneIdx * laneH + 8;
+    const x1 = x(op.invokeNanos / 1e6);
+    const x2 = x(op.completeNanos / 1e6);
+    const w = Math.max(3, x2 - x1);
+    const h = laneH - 20;
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x1); rect.setAttribute('y', y);
+    rect.setAttribute('width', w); rect.setAttribute('height', h);
+    rect.setAttribute('rx', 3);
+    rect.setAttribute('fill', colorFor(op));
+    rect.setAttribute('class', 'op-bar' + (witnessIds.has(op.id) ? ' witness' : ''));
+
+    rect.addEventListener('mousemove', e => {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY + 14) + 'px';
+      tooltip.innerHTML = `
+        <div><b>${op.type}</b> ${op.key} <span style="color:#8891a8">#${op.id}</span></div>
+        ${op.arg !== null ? `<div>arg: <b>${op.arg}</b></div>` : ''}
+        ${op.returned !== null ? `<div>returned: <b>${op.returned}</b></div>` : ''}
+        <div>outcome: <b>${op.outcome}</b></div>
+        <div>process: ${op.process}</div>
+        <div>${(op.invokeNanos/1e6).toFixed(1)}ms → ${(op.completeNanos/1e6).toFixed(1)}ms</div>
+        ${witnessIds.has(op.id) ? '<div style="color:#ffee58">⚠ part of violation witness</div>' : ''}
+      `;
+    });
+    rect.addEventListener('mouseleave', () => tooltip.style.display = 'none');
+
+    svg.appendChild(rect);
+  });
+
+  const wrap = document.getElementById('chart-wrap');
+  wrap.innerHTML = '';
+  wrap.appendChild(svg);
+}
+
+function niceStep(rough) {
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const n = rough / pow;
+  const mult = n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10;
+  return mult * pow;
+}
+
+function addLine(svg, x1, y1, x2, y2, stroke, width) {
+  const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+  l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+  l.setAttribute('stroke', stroke); l.setAttribute('stroke-width', width);
+  svg.appendChild(l);
+}
+function addRect(svg, x, y, w, h, fill) {
+  const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  r.setAttribute('x', x); r.setAttribute('y', y);
+  r.setAttribute('width', w); r.setAttribute('height', h);
+  r.setAttribute('fill', fill);
+  svg.appendChild(r);
+}
+function addText(svg, x, y, text, cls, anchor) {
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', x); t.setAttribute('y', y);
+  t.setAttribute('class', cls); t.setAttribute('text-anchor', anchor);
+  t.textContent = text;
+  svg.appendChild(t);
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,63 @@
+version: "3.9"
+
+# Every node is built from the same image; only the command args (node id,
+# config path) differ per service. Docker Compose gives each service a DNS
+# name equal to its service name automatically on a user-defined network —
+# that's what lets config/cluster-docker.conf reference "raft-node-1" etc.
+# as hostnames instead of hardcoded IPs, which is the correct way to do this
+# in Docker (container IPs aren't stable across restarts; service names are).
+#
+# Client (Raft) ports 9001-9005 only need to be reachable *within* the
+# raft-net network (node-to-node traffic), so they aren't published to the
+# host. The client-API ports 8001-8005 are published so you can run the CLI
+# client, or the chaos-test tool, from your host machine.
+
+services:
+  raft-node-1:
+    build: .
+    container_name: raft-node-1
+    hostname: raft-node-1
+    command: ["1", "config/cluster-docker.conf"]
+    networks: [raft-net]
+    ports:
+      - "8001:8001"
+
+  raft-node-2:
+    build: .
+    container_name: raft-node-2
+    hostname: raft-node-2
+    command: ["2", "config/cluster-docker.conf"]
+    networks: [raft-net]
+    ports:
+      - "8002:8002"
+
+  raft-node-3:
+    build: .
+    container_name: raft-node-3
+    hostname: raft-node-3
+    command: ["3", "config/cluster-docker.conf"]
+    networks: [raft-net]
+    ports:
+      - "8003:8003"
+
+  raft-node-4:
+    build: .
+    container_name: raft-node-4
+    hostname: raft-node-4
+    command: ["4", "config/cluster-docker.conf"]
+    networks: [raft-net]
+    ports:
+      - "8004:8004"
+
+  raft-node-5:
+    build: .
+    container_name: raft-node-5
+    hostname: raft-node-5
+    command: ["5", "config/cluster-docker.conf"]
+    networks: [raft-net]
+    ports:
+      - "8005:8005"
+
+networks:
+  raft-net:
+    driver: bridge

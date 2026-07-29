@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.raftkv</groupId>
+    <artifactId>raft-kv-store</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Raft KV Store</name>
+    <description>
+        A distributed, replicated key-value store built on a hand-implemented Raft
+        consensus module (leader election, log replication, Pre-Vote), plus a
+        self-contained chaos-testing and linearizability-checking framework.
+        Deliberately zero external dependencies — see README.md for why.
+    </description>
+
+    <properties>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <!--
+        No <dependencies> section: this project intentionally uses only the
+        Java standard library (java.nio for networking, java.io.Serializable
+        for wire format, java.util.concurrent for threading). See the "Why No
+        External Libraries?" section of README.md for the full rationale.
+    -->
+
+    <build>
+        <finalName>raft-kv-store</finalName>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+
+            <!--
+                Produces a runnable jar: `java -jar target/raft-kv-store.jar <nodeId> <clusterConfigPath>`
+                starts a Server node directly. Other entry points (Client, ChaosTestRunner,
+                ReplayChecker) still need an explicit classpath + class name, e.g.:
+                `java -cp target/raft-kv-store.jar com.raftkv.client.Client ...`
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.raftkv.Server</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

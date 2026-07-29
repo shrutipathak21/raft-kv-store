@@ -1,0 +1,10 @@
+out/
+target/
+logs/
+chaos-logs/
+*.log
+*.err.log
+*.json
+pids.txt
+sources.txt
+.git/
